@@ -16,7 +16,7 @@ AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
-# 2. Function to collect Market Data with a Built-In Retry Safety Net
+# 2. Function to collect Market Data with a Polite Retry Safety Net
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -24,17 +24,21 @@ def get_market_data(ticker):
     
     chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
     
-    # Retry logic: If FMP throttles us, wait 2 seconds and try again up to 3 times
+    # Polite retry logic to fully respect Free Tier rate limits
+    chart_data = None
     for attempt in range(3):
         try:
-            chart_response = requests.get(chart_url).json()
+            response = requests.get(chart_url)
+            chart_response = response.json()
             if isinstance(chart_response, list):
                 chart_data = chart_response[:5]
                 break
         except Exception:
             pass
-        time.sleep(2)
-    else:
+        print(f"⏳ FMP throttled on attempt {attempt + 1}. Taking a polite 3-second breather...")
+        time.sleep(3)
+        
+    if not chart_data:
         print(f"--- FMP API Error Response for {ticker} ---")
         raise KeyError(f"FMP Stable API consistently throttled or failed for {ticker}.")
         
@@ -90,7 +94,6 @@ def ask_ai(ticker, charts, calendar):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Advanced Reverse Finder: Find ALL JSON blocks in the text and pick the absolute last one
     json_blocks = re.findall(r"\{.*?\}", ai_text, re.DOTALL)
     if not json_blocks:
         print("--- Raw AI Output that failed parsing ---")
@@ -98,7 +101,6 @@ def ask_ai(ticker, charts, calendar):
         print("-----------------------------------------")
         raise ValueError("Could not find any JSON structural blocks in the AI response.")
         
-    # Pick the final JSON block (ignoring all conversational notes in the middle)
     json_payload = json_blocks[-1]
     
     try:
@@ -155,9 +157,8 @@ def run_bot():
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
         
-        # Generous 4-second delay guaranteed to execute even if a crash happens
-        print("⏳ Pausing 4 seconds to respect API limits...")
-        time.sleep(4)
+        print("⏳ Pausing 5 seconds to fully reset API call limits...")
+        time.sleep(5)
             
     print(f"\n=== Portfolio Scan Complete ===")
 
