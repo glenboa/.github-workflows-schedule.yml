@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -17,25 +18,21 @@ GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
 # 2. Function to collect Market Data (Charts & Global Macro Economic Calendar)
 def get_market_data(ticker):
-    # Calculate a safe 10-day window to guarantee we get 5 valid trading days
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # Official working Stable URL Endpoint
     chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
     chart_response = requests.get(chart_url).json()
     
-    # The stable endpoint directly returns a flat list of candles
     if isinstance(chart_response, list):
         chart_data = chart_response[:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an error structure for {ticker}. Check key or ticker.")
+        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
         
-    # Fetch Today's Global Economic Events Calendar
     today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
     
@@ -84,27 +81,31 @@ def ask_ai(ticker, charts, calendar):
         print("--- DeepInfra API Error Response ---")
         print(response)
         print("------------------------------------")
-        raise KeyError("Could not find 'choices' in AI response. Check your API key or model name.")
+        raise KeyError("Could not find 'choices' in AI response.")
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Robust Regex Extraction
-    match = re.search(r"\{.*\}", ai_text, re.DOTALL)
+    # Locate the start of the JSON block
+    match = re.search(r"\{", ai_text)
     if not match:
         print("--- Raw AI Output that failed parsing ---")
         print(ai_text)
         print("-----------------------------------------")
-        raise ValueError("Could not find any clean JSON block in the AI response.")
+        raise ValueError("Could not find an opening curly bracket '{' in the AI response.")
         
-    json_payload = match.group(0)
+    json_start_idx = match.start()
+    clean_substring = ai_text[json_start_idx:]
     
+    # Raw decode strips away any trailing extra characters seamlessly
     try:
-        return json.loads(json_payload)
+        decoder = json.JSONDecoder()
+        data_dict, _ = decoder.raw_decode(clean_substring)
+        return data_dict
     except Exception as e:
-        print("--- Regex extracted text that failed decoding ---")
-        print(json_payload)
-        print("-------------------------------------------------")
-        raise ValueError(f"Failed to decode extracted JSON: {e}")
+        print("--- Substring that failed raw decoding ---")
+        print(clean_substring)
+        print("------------------------------------------")
+        raise ValueError(f"Raw decoder failed to parse extracted substring: {e}")
 
 # 4. Core Scanning Engine for a single ticker
 def process_ticker(ticker, trading_client):
@@ -118,7 +119,6 @@ def process_ticker(ticker, trading_client):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    # Keeping our aggressive test trigger wide open for testing!
     if action in ["BUY", "HOLD"]:
         print(f"🎯 [EXECUTE] Confidence ({confidence}) clears threshold. Checking open positions...")
         
@@ -152,6 +152,9 @@ def run_bot():
             process_ticker(ticker, trading_client)
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
+        
+        # 3-second breathing room pause to prevent free tier API throttling
+        time.sleep(3)
             
     print(f"\n=== Portfolio Scan Complete ===")
 
