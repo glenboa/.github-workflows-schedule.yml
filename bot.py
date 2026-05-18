@@ -16,42 +16,25 @@ AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
-# 2. Bulk Market Fetcher (Only calls the API ONCE for the whole portfolio)
-def fetch_bulk_market_data():
-    print("📥 [DATA] Fetching bulk market data for all assets simultaneously...")
+# 2. Function to collect Market Data (Individual calls with safety handling)
+def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # Convert list to comma-separated string: "SPY,QQQ,EWJ,EWU,GLD"
-    ticker_string = ",".join(GLOBAL_TICKERS)
+    chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
     
-    chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker_string}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
+    response = requests.get(chart_url)
+    chart_response = response.json()
     
-    bulk_charts = {}
-    for attempt in range(3):
-        try:
-            response = requests.get(chart_url)
-            chart_response = response.json()
-            
-            if isinstance(chart_response, list):
-                # Organize the bulk list into a neat dictionary grouped by ticker symbol
-                for item in chart_response:
-                    sym = item.get("symbol")
-                    if sym:
-                        if sym not in bulk_charts:
-                            bulk_charts[sym] = []
-                        if len(bulk_charts[sym]) < 5:
-                            bulk_charts[sym].append(item)
-                break
-        except Exception:
-            pass
-        time.sleep(3)
+    if isinstance(chart_response, list):
+        chart_data = chart_response[:5]
+    else:
+        print(f"--- FMP API Error Response for {ticker} ---")
+        print(chart_response)
+        print("------------------------------------------")
+        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
         
-    if not bulk_charts:
-        raise KeyError("FMP Bulk API failed to return data. The free tier limit might be exhausted for the hour.")
-        
-    # Fetch Today's Global Economic Events Calendar (Only 1 call needed)
     today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
     
@@ -73,7 +56,7 @@ def fetch_bulk_market_data():
     except Exception as e:
         print(f"⚠️ Warning: Could not parse economic calendar data: {e}")
 
-    return bulk_charts, calendar_events
+    return str(chart_data), str(calendar_events)
 
 # 3. Function to talk to DeepSeek-R1 AI
 def ask_ai(ticker, charts, calendar):
@@ -122,8 +105,11 @@ def ask_ai(ticker, charts, calendar):
         raise ValueError(f"JSON decoder failed to handle selected block: {e}")
 
 # 4. Core Scanning Engine for a single ticker
-def process_ticker(ticker, charts, calendar, trading_client):
-    print(f"\n🧠 [ANALYZING] Consulting DeepSeek-R1 Macro Brain for {ticker}...")
+def process_ticker(ticker, trading_client):
+    print(f"\n🔄 [SCANNING] Fetching technical data & economic calendar for {ticker}...")
+    charts, calendar = get_market_data(ticker)
+    
+    print(f"🧠 [ANALYZING] Consulting DeepSeek-R1 Macro Brain for {ticker}...")
     decision = ask_ai(ticker, charts, calendar)
     print(f"📊 [AI OUTPUT] {ticker} Decision: {decision}")
     
@@ -154,28 +140,18 @@ def process_ticker(ticker, charts, calendar, trading_client):
 
 # 5. Main Loop Execution
 def run_bot():
-    print(f"=== Starting Bulk Macro-Driven Global Session Portfolio Scan ===")
+    print(f"=== Starting Macro-Driven Global Session Portfolio Scan ===")
     
     trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
     
-    try:
-        bulk_charts, calendar_events = fetch_bulk_market_data()
-    except Exception as e:
-        print(f"❌ Critical Error loading market data: {e}")
-        return
-    
     for ticker in GLOBAL_TICKERS:
-        ticker_charts = bulk_charts.get(ticker, [])
-        if not ticker_charts:
-            print(f"⚠️ Skipping {ticker}: No technical chart data returned in bulk package.")
-            continue
-            
         try:
-            process_ticker(ticker, str(ticker_charts), str(calendar_events), trading_client)
+            process_ticker(ticker, trading_client)
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
+        
+        # 20-second sleep perfectly spaced inside the loop block to protect the free tier
+        print("⏳ Pausing 20 seconds to guarantee API safety...")
+        time.sleep(20)
             
     print(f"\n=== Portfolio Scan Complete ===")
-
-if __name__ == "__main__":
-    run_bot()
