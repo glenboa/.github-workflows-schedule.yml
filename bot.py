@@ -55,7 +55,6 @@ def ask_ai(charts, news):
     
     response = requests.post("https://api.deepinfra.com/v1/openai/chat/completions", headers=headers, json=data).json()
     
-    # Catch authentication or server issues immediately
     if 'choices' not in response:
         print("--- DeepInfra API Error Response ---")
         print(response)
@@ -64,13 +63,20 @@ def ask_ai(charts, news):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Clean up any potential markdown wrapper clutter like ```json ... ```
-    if ai_text.startswith("```"):
-        ai_text = ai_text.split("```")[1]
-        if ai_text.startswith("json"):
-            ai_text = ai_text[4:]
-            
-    return json.loads(ai_text.strip())
+    # Robustly isolate JSON by slicing from the first '{' to the last '}'
+    # This strips out the model's <think> tags and any markdown clutter
+    try:
+        start_idx = ai_text.find('{')
+        end_idx = ai_text.rfind('}') + 1
+        if start_idx == -1 or end_idx == 0:
+            raise ValueError("No JSON block found in AI response.")
+        clean_json = ai_text[start_idx:end_idx]
+        return json.loads(clean_json)
+    except Exception as e:
+        print("--- Raw AI Output that failed parsing ---")
+        print(ai_text)
+        print("-----------------------------------------")
+        raise ValueError(f"Failed to extract valid JSON: {e}")
 
 # 4. Main Execution Engine
 def run_bot():
