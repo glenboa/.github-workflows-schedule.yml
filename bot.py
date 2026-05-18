@@ -14,7 +14,7 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-GLOBAL_TICKERS = ["SPY", "QQQ", "GLD", "AAPL", "MSFT"]
+GLOBAL_TICKERS = ["SPY", "NVDA", "GOOG", "AAPL", "MSFT"]
 
 # 2. Function to collect Market Data
 def get_market_data(ticker):
