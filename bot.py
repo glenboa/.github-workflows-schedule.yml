@@ -65,17 +65,22 @@ def ask_ai(charts, news):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Locate the outer-most curly brackets to completely isolate the JSON dictionary string
+    # Locate where the JSON starts
+    start_idx = ai_text.find('{')
+    if start_idx == -1:
+        print("--- Raw AI Output that failed parsing ---")
+        print(ai_text)
+        print("-----------------------------------------")
+        raise ValueError("Could not find any opening curly bracket '{' in the AI response.")
+        
+    # Cut off everything before the first '{' (like the think tags and 'Output:')
+    json_payload = ai_text[start_idx:]
+    
     try:
-        start_idx = ai_text.find('{')
-        end_idx = ai_text.rfind('}') + 1
-        
-        if start_idx == -1 or end_idx == 0:
-            raise ValueError("Could not find any curly brackets in the AI's response text.")
-            
-        clean_json = ai_text[start_idx:end_idx].strip()
-        return json.loads(clean_json)
-        
+        # The decoder reads sequentially and ignores any trailing data/characters completely
+        decoder = json.JSONDecoder()
+        data_dict, index = decoder.raw_decode(json_payload)
+        return data_dict
     except Exception as e:
         print("--- Raw AI Output that failed parsing ---")
         print(ai_text)
