@@ -113,8 +113,7 @@ def process_ticker(ticker, trading_client):
     
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
-    
-    if action == "BUY" and confidence >= 0.55:
+    if action in ["BUY", "HOLD"]:
         print(f"🎯 [EXECUTE] Confidence ({confidence}) clears threshold. Checking open positions...")
         
         try:
