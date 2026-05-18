@@ -14,35 +14,46 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
+# Adjusted to use high-volume symbols guaranteed to exist on FMP's Free Tier sample dataset
+GLOBAL_TICKERS = ["SPY", "QQQ", "GLD", "AAPL", "MSFT"]
 
-# 2. Function to collect Market Data (Current Non-Legacy v3 API)
+# 2. Function to collect Market Data (Using current 2026 /stable/ endpoints)
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # Updated to the new supported active endpoint format
-    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full-v2/historical?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
+    # Official /stable/ historical endpoint with proper query parameters
+    chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
+    chart_params = {
+        "symbol": ticker,
+        "from": start_date,
+        "to": end_date,
+        "apikey": FMP_KEY
+    }
     
-    response = requests.get(chart_url)
+    response = requests.get(chart_url, params=chart_params)
     chart_response = response.json()
     
-    # Check if the correct nested structure exists
-    if isinstance(chart_response, dict) and "historical" in chart_response:
-        chart_data = chart_response["historical"][:5]
+    if isinstance(chart_response, list):
+        chart_data = chart_response[:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP API returned an error structure or unsupported path for {ticker}.")
+        raise KeyError(f"FMP Stable API returned an error structure or unsupported token for {ticker}.")
         
-    today_date = today.strftime("%Y-%m-%d")
-    calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
+    # Official /stable/ economic calendar endpoint
+    calendar_url = "https://financialmodelingprep.com/stable/economic-calendar"
+    calendar_params = {
+        "from": end_date,
+        "to": end_date,
+        "apikey": FMP_KEY
+    }
     
     calendar_events = []
     try:
-        calendar_response = requests.get(calendar_url).json()
+        calendar_response = requests.get(calendar_url, params=calendar_params).json()
         if isinstance(calendar_response, list):
             calendar_events = [
                 {
