@@ -14,16 +14,14 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Adjusted to use high-volume symbols guaranteed to exist on FMP's Free Tier sample dataset
 GLOBAL_TICKERS = ["SPY", "QQQ", "GLD", "AAPL", "MSFT"]
 
-# 2. Function to collect Market Data (Using current 2026 /stable/ endpoints)
+# 2. Function to collect Market Data
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # Official /stable/ historical endpoint with proper query parameters
     chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
     chart_params = {
         "symbol": ticker,
@@ -41,9 +39,8 @@ def get_market_data(ticker):
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an error structure or unsupported token for {ticker}.")
+        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
         
-    # Official /stable/ economic calendar endpoint
     calendar_url = "https://financialmodelingprep.com/stable/economic-calendar"
     calendar_params = {
         "from": end_date,
@@ -129,8 +126,9 @@ def process_ticker(ticker, trading_client):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    if action in ["BUY", "HOLD"]:
-        print(f"🎯 [EXECUTE] Confidence ({confidence}) clears threshold. Checking open positions...")
+    # FIX: Must explicitly be "BUY" AND clear the minimum target confidence threshold
+    if action == "BUY" and confidence >= 0.55:
+        print(f"🎯 [EXECUTE] Target triggered! Confidence ({confidence}) clears threshold. Checking open positions...")
         
         try:
             position = trading_client.get_open_position(ticker)
@@ -149,7 +147,7 @@ def process_ticker(ticker, trading_client):
         trading_client.submit_order(order_data)
         print(f"🚀 [SUCCESS] Order successfully transmitted to Alpaca for 1 share of {ticker}!")
     else:
-        print(f"⏸️ [HOLD] AI recommendation is HOLD or confidence ({confidence}) is too low.")
+        print(f"⏸️ [SKIP] Asset skipped. Recommendation is {action} or confidence ({confidence}) is below 0.55 safety threshold.")
 
 # 5. Main Loop Execution
 def run_bot():
