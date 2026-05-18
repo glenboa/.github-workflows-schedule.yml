@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs at 20:50 UTC (3:50 PM EST) Monday-Friday, 10 mins before US market close
     - cron: '50 20 * * 1-5'
-
+workflow_dispatch:
 jobs:
   trade:
     runs-on: ubuntu-latest
