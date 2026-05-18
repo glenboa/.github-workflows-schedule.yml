@@ -16,22 +16,27 @@ AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
-# 2. Function to collect Market Data (Charts & Global Macro Economic Calendar)
+# 2. Function to collect Market Data with a Built-In Retry Safety Net
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
     chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
-    chart_response = requests.get(chart_url).json()
     
-    if isinstance(chart_response, list):
-        chart_data = chart_response[:5]
+    # Retry logic: If FMP throttles us, wait 2 seconds and try again up to 3 times
+    for attempt in range(3):
+        try:
+            chart_response = requests.get(chart_url).json()
+            if isinstance(chart_response, list):
+                chart_data = chart_response[:5]
+                break
+        except Exception:
+            pass
+        time.sleep(2)
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
-        print(chart_response)
-        print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
+        raise KeyError(f"FMP Stable API consistently throttled or failed for {ticker}.")
         
     today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
@@ -85,27 +90,24 @@ def ask_ai(ticker, charts, calendar):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Locate the start of the JSON block
-    match = re.search(r"\{", ai_text)
-    if not match:
+    # Advanced Reverse Finder: Find ALL JSON blocks in the text and pick the absolute last one
+    json_blocks = re.findall(r"\{.*?\}", ai_text, re.DOTALL)
+    if not json_blocks:
         print("--- Raw AI Output that failed parsing ---")
         print(ai_text)
         print("-----------------------------------------")
-        raise ValueError("Could not find an opening curly bracket '{' in the AI response.")
+        raise ValueError("Could not find any JSON structural blocks in the AI response.")
         
-    json_start_idx = match.start()
-    clean_substring = ai_text[json_start_idx:]
+    # Pick the final JSON block (ignoring all conversational notes in the middle)
+    json_payload = json_blocks[-1]
     
-    # Raw decode strips away any trailing extra characters seamlessly
     try:
-        decoder = json.JSONDecoder()
-        data_dict, _ = decoder.raw_decode(clean_substring)
-        return data_dict
+        return json.loads(json_payload)
     except Exception as e:
-        print("--- Substring that failed raw decoding ---")
-        print(clean_substring)
-        print("------------------------------------------")
-        raise ValueError(f"Raw decoder failed to parse extracted substring: {e}")
+        print("--- Text segment that failed final parsing ---")
+        print(json_payload)
+        print("----------------------------------------------")
+        raise ValueError(f"JSON decoder failed to handle selected block: {e}")
 
 # 4. Core Scanning Engine for a single ticker
 def process_ticker(ticker, trading_client):
@@ -153,8 +155,9 @@ def run_bot():
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
         
-        # 3-second breathing room pause to prevent free tier API throttling
-        time.sleep(3)
+        # Generous 4-second delay guaranteed to execute even if a crash happens
+        print("⏳ Pausing 4 seconds to respect API limits...")
+        time.sleep(4)
             
     print(f"\n=== Portfolio Scan Complete ===")
 
