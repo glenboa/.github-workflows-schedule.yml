@@ -16,24 +16,26 @@ AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
-# 2. Function to collect Market Data (Individual calls with safety handling)
+# 2. Function to collect Market Data (Free Tier Standard Endpoints)
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
+    # Swapped from premium /stable/ to the official standard free-tier historical data path
+    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?from={start_date}&to={end_date}&apikey={FMP_KEY}"
     
     response = requests.get(chart_url)
     chart_response = response.json()
     
-    if isinstance(chart_response, list):
-        chart_data = chart_response[:5]
+    # Standard endpoint wraps data inside a "historical" list wrapper
+    if isinstance(chart_response, dict) and "historical" in chart_response:
+        chart_data = chart_response["historical"][:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
+        raise KeyError(f"FMP Standard API returned an unexpected structure or error for {ticker}.")
         
     today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
@@ -140,7 +142,7 @@ def process_ticker(ticker, trading_client):
 
 # 5. Main Loop Execution
 def run_bot():
-    print("=== Starting Macro-Driven Global Session Portfolio Scan ===")
+    print(f"=== Starting Macro-Driven Global Session Portfolio Scan ===")
     
     trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
     
@@ -154,7 +156,7 @@ def run_bot():
         print("⏳ Pausing 20 seconds to guarantee API safety...")
         time.sleep(20)
             
-    print("\n=== Portfolio Scan Complete ===")
+    print(f"\n=== Portfolio Scan Complete ===")
 
 if __name__ == "__main__":
     run_bot()
