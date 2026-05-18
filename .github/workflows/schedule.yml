@@ -2,9 +2,15 @@ name: Run AI Trading Bot
 
 on:
   schedule:
-    - cron: '50 20 * * 1-5'
-  workflow_dispatch:
-
+    # 1. Sydney Open: 11:40 PM UTC (Mon-Fri)
+    - cron: '40 23 * * 1-5'
+    # 2. Tokyo Open: 12:10 AM UTC (Mon-Fri)
+    - cron: '10 0 * * 1-5'
+    # 3. London Open: 7:10 AM UTC (Mon-Fri)
+    - cron: '10 7 * * 1-5'
+    # 4. New York Open: 1:40 PM UTC (Mon-Fri)
+    - cron: '40 13 * * 1-5'
+  workflow_dispatch: # Keeps manual button active for testing
 jobs:
   trade:
     runs-on: ubuntu-latest
