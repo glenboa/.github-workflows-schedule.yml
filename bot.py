@@ -140,7 +140,7 @@ def process_ticker(ticker, trading_client):
 
 # 5. Main Loop Execution
 def run_bot():
-    print(f"=== Starting Macro-Driven Global Session Portfolio Scan ===")
+    print("=== Starting Macro-Driven Global Session Portfolio Scan ===")
     
     trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
     
@@ -154,4 +154,7 @@ def run_bot():
         print("⏳ Pausing 20 seconds to guarantee API safety...")
         time.sleep(20)
             
-    print(f"\n=== Portfolio Scan Complete ===")
+    print("\n=== Portfolio Scan Complete ===")
+
+if __name__ == "__main__":
+    run_bot()
