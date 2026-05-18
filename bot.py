@@ -15,20 +15,21 @@ TICKER = "SPY"
 
 # 2. Function to collect Market Data (Charts & News)
 def get_market_data():
-    # Updated to use FMP's mandatory new stable data structures
     chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={TICKER}&apikey={FMP_KEY}"
     news_url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={TICKER}&limit=5&apikey={FMP_KEY}"
     
     response = requests.get(chart_url).json()
     
-    # Check for the correct key mapping in the new API format
-    if 'historical' not in response:
+    # If FMP returns a list directly, it means the data fetch succeeded!
+    if isinstance(response, list):
+        chart_data = response[:5]
+    else:
+        # If it's a dictionary containing an Error Message, catch it here
         print("--- FMP API Error Response ---")
         print(response)
         print("------------------------------")
-        raise KeyError("Could not find 'historical' data in FMP response. Check your API key or endpoint.")
+        raise KeyError("FMP returned an error dictionary instead of the historical price list.")
         
-    chart_data = response['historical'][:5]
     news_data = requests.get(news_url).json()
     
     return str(chart_data), str(news_data)
