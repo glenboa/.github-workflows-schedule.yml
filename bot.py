@@ -16,26 +16,26 @@ AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
-# 2. Function to collect Market Data (Free Tier Standard Endpoints)
+# 2. Function to collect Market Data (Current Non-Legacy v3 API)
 def get_market_data(ticker):
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # Swapped from premium /stable/ to the official standard free-tier historical data path
-    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?from={start_date}&to={end_date}&apikey={FMP_KEY}"
+    # Updated to the new supported active endpoint format
+    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full-v2/historical?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
     
     response = requests.get(chart_url)
     chart_response = response.json()
     
-    # Standard endpoint wraps data inside a "historical" list wrapper
+    # Check if the correct nested structure exists
     if isinstance(chart_response, dict) and "historical" in chart_response:
         chart_data = chart_response["historical"][:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP Standard API returned an unexpected structure or error for {ticker}.")
+        raise KeyError(f"FMP API returned an error structure or unsupported path for {ticker}.")
         
     today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
@@ -152,7 +152,6 @@ def run_bot():
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
         
-        # 20-second sleep perfectly spaced inside the loop block to protect the free tier
         print("⏳ Pausing 20 seconds to guarantee API safety...")
         time.sleep(20)
             
