@@ -157,8 +157,9 @@ def run_bot():
         except Exception as e:
             print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
         
-print("⏳ Pausing 15 seconds to fully reset API call limits...")
-time.sleep(15)
+        # 15-second breathing room properly aligned inside the loop block
+        print("⏳ Pausing 15 seconds to fully reset API call limits...")
+        time.sleep(15)
             
     print(f"\n=== Portfolio Scan Complete ===")
 
