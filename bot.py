@@ -2,7 +2,7 @@ import os
 import requests
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -17,20 +17,26 @@ GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
 # 2. Function to collect Market Data (Charts & Global Macro Economic Calendar)
 def get_market_data(ticker):
-    # Restored to the highly stable v3 full historical endpoint
-    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?apikey={FMP_KEY}"
+    # Calculate a safe 10-day window to guarantee we get 5 valid trading days
+    today = datetime.now(timezone.utc)
+    start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+    
+    # Official working Stable URL Endpoint
+    chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&from={start_date}&to={end_date}&apikey={FMP_KEY}"
     chart_response = requests.get(chart_url).json()
     
-    if isinstance(chart_response, dict) and "historical" in chart_response:
-        chart_data = chart_response["historical"][:5]
+    # The stable endpoint directly returns a flat list of candles
+    if isinstance(chart_response, list):
+        chart_data = chart_response[:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP returned an unexpected data structure for {ticker}.")
+        raise KeyError(f"FMP Stable API returned an error structure for {ticker}. Check key or ticker.")
         
     # Fetch Today's Global Economic Events Calendar
-    today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_date = today.strftime("%Y-%m-%d")
     calendar_url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today_date}&to={today_date}&apikey={FMP_KEY}"
     
     calendar_events = []
@@ -82,7 +88,7 @@ def ask_ai(ticker, charts, calendar):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Advanced Regex Fix: Extracts ONLY the text between the first '{' and the last '}'
+    # Robust Regex Extraction
     match = re.search(r"\{.*\}", ai_text, re.DOTALL)
     if not match:
         print("--- Raw AI Output that failed parsing ---")
@@ -112,7 +118,7 @@ def process_ticker(ticker, trading_client):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    # Aggressive test trigger to guarantee execution
+    # Keeping our aggressive test trigger wide open for testing!
     if action in ["BUY", "HOLD"]:
         print(f"🎯 [EXECUTE] Confidence ({confidence}) clears threshold. Checking open positions...")
         
