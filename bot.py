@@ -49,13 +49,28 @@ def ask_ai(charts, news):
     """
     
     data = {
-        "model": "deepseek-ai/DeepSeek-R1-0528",
+        "model": "deepseek-ai/DeepSeek-R1",
         "messages": [{"role": "user", "content": prompt}]
     }
     
-    response = requests.post("https://api.deepinfra.com/v1/openai/chat/completions", headers=headers, json=data)
-    ai_text = response.json()['choices'][0]['message']['content'].strip()
-    return json.loads(ai_text)
+    response = requests.post("https://api.deepinfra.com/v1/openai/chat/completions", headers=headers, json=data).json()
+    
+    # Catch authentication or server issues immediately
+    if 'choices' not in response:
+        print("--- DeepInfra API Error Response ---")
+        print(response)
+        print("------------------------------------")
+        raise KeyError("Could not find 'choices' in AI response. Check your API key or model name.")
+        
+    ai_text = response['choices'][0]['message']['content'].strip()
+    
+    # Clean up any potential markdown wrapper clutter like ```json ... ```
+    if ai_text.startswith("```"):
+        ai_text = ai_text.split("```")[1]
+        if ai_text.startswith("json"):
+            ai_text = ai_text[4:]
+            
+    return json.loads(ai_text.strip())
 
 # 4. Main Execution Engine
 def run_bot():
