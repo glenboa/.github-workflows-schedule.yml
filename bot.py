@@ -34,6 +34,8 @@ def get_market_data():
     
     return str(chart_data), str(news_data)
 
+import re
+
 # 3. Function to talk to DeepSeek-R1 AI
 def ask_ai(charts, news):
     headers = {"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}
@@ -63,14 +65,13 @@ def ask_ai(charts, news):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    # Robustly isolate JSON by slicing from the first '{' to the last '}'
-    # This strips out the model's <think> tags and any markdown clutter
+    # Use a regex pattern to pull only the first valid JSON block structure from the text
     try:
-        start_idx = ai_text.find('{')
-        end_idx = ai_text.rfind('}') + 1
-        if start_idx == -1 or end_idx == 0:
-            raise ValueError("No JSON block found in AI response.")
-        clean_json = ai_text[start_idx:end_idx]
+        match = re.search(r'\{[^}]+\}', ai_text)
+        if not match:
+            raise ValueError("No matching JSON structure found in the raw AI text.")
+        
+        clean_json = match.group(0)
         return json.loads(clean_json)
     except Exception as e:
         print("--- Raw AI Output that failed parsing ---")
