@@ -1,6 +1,7 @@
 import os
 import requests
 import json
+import re
 from datetime import datetime, timezone
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -12,22 +13,21 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Expanded Top 5 Global Assets (Including GLD for Gold spot mirroring!)
 GLOBAL_TICKERS = ["SPY", "QQQ", "EWJ", "EWU", "GLD"]
 
 # 2. Function to collect Market Data (Charts & Global Macro Economic Calendar)
 def get_market_data(ticker):
-    # Fetch price data
-    chart_url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&apikey={FMP_KEY}"
+    # Restored to the highly stable v3 full historical endpoint
+    chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?apikey={FMP_KEY}"
     chart_response = requests.get(chart_url).json()
     
-    if isinstance(chart_response, list):
-        chart_data = chart_response[:5]
+    if isinstance(chart_response, dict) and "historical" in chart_response:
+        chart_data = chart_response["historical"][:5]
     else:
         print(f"--- FMP API Error Response for {ticker} ---")
         print(chart_response)
         print("------------------------------------------")
-        raise KeyError(f"FMP returned an error dictionary instead of the historical price list for {ticker}.")
+        raise KeyError(f"FMP returned an unexpected data structure for {ticker}.")
         
     # Fetch Today's Global Economic Events Calendar
     today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -37,7 +37,6 @@ def get_market_data(ticker):
     try:
         calendar_response = requests.get(calendar_url).json()
         if isinstance(calendar_response, list):
-            # Filter for Medium and High impact macro news to avoid overloading the AI with fluff
             calendar_events = [
                 {
                     "event": event.get("event"),
@@ -83,24 +82,23 @@ def ask_ai(ticker, charts, calendar):
         
     ai_text = response['choices'][0]['message']['content'].strip()
     
-    start_idx = ai_text.find('{')
-    if start_idx == -1:
+    # Advanced Regex Fix: Extracts ONLY the text between the first '{' and the last '}'
+    match = re.search(r"\{.*\}", ai_text, re.DOTALL)
+    if not match:
         print("--- Raw AI Output that failed parsing ---")
         print(ai_text)
         print("-----------------------------------------")
-        raise ValueError("Could not find any opening curly bracket '{' in the AI response.")
+        raise ValueError("Could not find any clean JSON block in the AI response.")
         
-    json_payload = ai_text[start_idx:]
+    json_payload = match.group(0)
     
     try:
-        decoder = json.JSONDecoder()
-        data_dict, index = decoder.raw_decode(json_payload)
-        return data_dict
+        return json.loads(json_payload)
     except Exception as e:
-        print("--- Raw AI Output that failed parsing ---")
-        print(ai_text)
-        print("-----------------------------------------")
-        raise ValueError(f"Failed to extract valid JSON: {e}")
+        print("--- Regex extracted text that failed decoding ---")
+        print(json_payload)
+        print("-------------------------------------------------")
+        raise ValueError(f"Failed to decode extracted JSON: {e}")
 
 # 4. Core Scanning Engine for a single ticker
 def process_ticker(ticker, trading_client):
@@ -113,6 +111,8 @@ def process_ticker(ticker, trading_client):
     
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
+    
+    # Aggressive test trigger to guarantee execution
     if action in ["BUY", "HOLD"]:
         print(f"🎯 [EXECUTE] Confidence ({confidence}) clears threshold. Checking open positions...")
         
