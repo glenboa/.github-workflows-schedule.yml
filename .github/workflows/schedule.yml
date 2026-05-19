@@ -2,8 +2,8 @@ name: Run AI Trading Bot
 
 on:
   schedule:
-    # 1. Sydney Open: 11:40 PM UTC (Mon-Fri)
-    - cron: '40 23 * * 1-5'
+    # 1. Sydney Open: 11:40 PM UTC (Sun-Thu to catch Sunday night week-opener)
+    - cron: '40 23 * * 0-4'
     # 2. Tokyo Open: 12:10 AM UTC (Mon-Fri)
     - cron: '10 0 * * 1-5'
     # 3. London Open: 7:10 AM UTC (Mon-Fri)
