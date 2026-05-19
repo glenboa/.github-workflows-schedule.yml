@@ -14,7 +14,7 @@ ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-GLOBAL_TICKERS = ["SPY", "NVDA", "GOOG", "AAPL", "MSFT"]
+GLOBAL_TICKERS = ["SPY", "NVDA", "AAPL", "MSFT"]
 
 # 2. Function to collect Market Data
 def get_market_data(ticker):
@@ -126,7 +126,6 @@ def process_ticker(ticker, trading_client):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    # FIX: Must explicitly be "BUY" AND clear the minimum target confidence threshold
     if action == "BUY" and confidence >= 0.55:
         print(f"🎯 [EXECUTE] Target triggered! Confidence ({confidence}) clears threshold. Checking open positions...")
         
@@ -135,17 +134,46 @@ def process_ticker(ticker, trading_client):
             print(f"🛡️ [SAFETY] Active position in {ticker} detected. Order blocked to control risk.")
             return
         except Exception:
-            print(f"🟢 No open positions for {ticker}. Submitting order...")
+            print(f"🟢 No open positions for {ticker}. Calculating macro bracket targets...")
             
+        # Fetch current asset market price via Alpaca to base our brackets on
+        try:
+            latest_trade = trading_client.get_latest_trade(ticker)
+            current_price = latest_trade.price
+            print(f"💵 Current Market Price for {ticker}: ${current_price:.2f}")
+        except Exception as e:
+            print(f"❌ Failed to fetch current price from Alpaca: {e}. Skipping order execution.")
+            return
+
+        # ASSET-SPECIFIC VOLATILITY BRACKETS (Paul Tudor Jones 3:1 Asymmetric Ratio)
+        if ticker in ["SPY"]:
+            # Tighter brackets for stable broad market tracking
+            sl_percent = 0.015  # 1.5% Stop Loss
+            tp_percent = 0.045  # 4.5% Take Profit
+        else:
+            # Wider brackets for high-beta tech giants (NVDA, AAPL, MSFT)
+            sl_percent = 0.025  # 2.5% Stop Loss
+            tp_percent = 0.075  # 7.5% Take Profit
+
+        # Calculate absolute execution numbers rounded to clean penny amounts
+        stop_loss_price = round(current_price * (1.0 - sl_percent), 2)
+        take_profit_price = round(current_price * (1.0 + tp_percent), 2)
+        
+        print(f"🛡️ Risk Setup -> Stop Loss: ${stop_loss_price:.2f} | Take Profit: ${take_profit_price:.2f}")
+            
+        # Bundling entry, TP, and SL into a single server-side native Bracket Order
         order_data = MarketOrderRequest(
             symbol=ticker,
             qty=1,
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY
+            time_in_force=TimeInForce.DAY,
+            order_class="bracket",
+            take_profit={"limit_price": take_profit_price},
+            stop_loss={"stop_price": stop_loss_price}
         )
         
         trading_client.submit_order(order_data)
-        print(f"🚀 [SUCCESS] Order successfully transmitted to Alpaca for 1 share of {ticker}!")
+        print(f"🚀 [SUCCESS] Server-Side Bracket Order transmitted to Alpaca for {ticker}!")
     else:
         print(f"⏸️ [SKIP] Asset skipped. Recommendation is {action} or confidence ({confidence}) is below 0.55 safety threshold.")
 
