@@ -5,8 +5,8 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 # 1. Initialize API Keys from environment variables
 FMP_KEY = os.getenv("FMP_API_KEY")
@@ -126,17 +126,32 @@ def process_ticker(ticker, trading_client):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    if action == "BUY" and confidence >= 0.55:
-        print(f"🎯 [EXECUTE] Target triggered! Confidence ({confidence}) clears threshold. Checking open positions...")
+    # FOR THIS MANUAL TEST: We accept BUY or HOLD to force trades through and see the new brackets work
+    if action in ["BUY", "HOLD"]:
+        print(f"🎯 [EXECUTE] Active mode triggered! Checking session order history...")
         
-        try:
-            position = trading_client.get_open_position(ticker)
-            print(f"🛡️ [SAFETY] Active position in {ticker} detected. Order blocked to control risk.")
+        # HIGH ACTIVITY FIX: Check if we already placed an order TODAY, instead of blocking wholesale open positions
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        order_filter = GetOrdersRequest(
+            status=QueryOrderStatus.ALL,
+            side=OrderSide.BUY,
+            nested=False
+        )
+        
+        all_orders = trading_client.get_orders(order_filter)
+        duplicate_found = False
+        
+        for order in all_orders:
+            if order.symbol == ticker and order.created_at >= today_start:
+                duplicate_found = True
+                break
+                
+        if duplicate_found:
+            print(f"🛡️ [SAFETY] You already fired a trade for {ticker} during this market session. Skipping to protect capital.")
             return
-        except Exception:
-            print(f"🟢 No open positions for {ticker}. Calculating macro bracket targets...")
             
-        # Fetch current asset market price via Alpaca to base our brackets on
+        print(f"🟢 No recent session orders for {ticker}. Fetching execution price...")
+        
         try:
             latest_trade = trading_client.get_latest_trade(ticker)
             current_price = latest_trade.price
@@ -145,23 +160,19 @@ def process_ticker(ticker, trading_client):
             print(f"❌ Failed to fetch current price from Alpaca: {e}. Skipping order execution.")
             return
 
-        # ASSET-SPECIFIC VOLATILITY BRACKETS (Paul Tudor Jones 3:1 Asymmetric Ratio)
+        # ASSET-SPECIFIC VOLATILITY BRACKETS (Paul Tudor Jones 3:1 Ratio)
         if ticker in ["SPY"]:
-            # Tighter brackets for stable broad market tracking
             sl_percent = 0.015  # 1.5% Stop Loss
             tp_percent = 0.045  # 4.5% Take Profit
         else:
-            # Wider brackets for high-beta tech giants (NVDA, AAPL, MSFT)
             sl_percent = 0.025  # 2.5% Stop Loss
             tp_percent = 0.075  # 7.5% Take Profit
 
-        # Calculate absolute execution numbers rounded to clean penny amounts
         stop_loss_price = round(current_price * (1.0 - sl_percent), 2)
         take_profit_price = round(current_price * (1.0 + tp_percent), 2)
         
         print(f"🛡️ Risk Setup -> Stop Loss: ${stop_loss_price:.2f} | Take Profit: ${take_profit_price:.2f}")
             
-        # Bundling entry, TP, and SL into a single server-side native Bracket Order
         order_data = MarketOrderRequest(
             symbol=ticker,
             qty=1,
@@ -175,7 +186,7 @@ def process_ticker(ticker, trading_client):
         trading_client.submit_order(order_data)
         print(f"🚀 [SUCCESS] Server-Side Bracket Order transmitted to Alpaca for {ticker}!")
     else:
-        print(f"⏸️ [SKIP] Asset skipped. Recommendation is {action} or confidence ({confidence}) is below 0.55 safety threshold.")
+        print(f"⏸️ [SKIP] Asset skipped.")
 
 # 5. Main Loop Execution
 def run_bot():
