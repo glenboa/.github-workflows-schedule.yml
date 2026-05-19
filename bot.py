@@ -127,7 +127,7 @@ def process_ticker(ticker, trading_client):
     confidence = decision.get("confidence", 0.0)
     
     # FIX: Must explicitly be "BUY" AND clear the minimum target confidence threshold
-    if action in ["BUY", "HOLD"]:
+    if action == "BUY" and confidence >= 0.55:
         print(f"🎯 [EXECUTE] Target triggered! Confidence ({confidence}) clears threshold. Checking open positions...")
         
         try:
