@@ -5,6 +5,8 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
+from alpaca.data.client import StockDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
@@ -128,15 +130,12 @@ def monitor_active_portfolio_exits(trading_client, state):
     for position in open_positions:
         ticker = position.symbol
         current_price = float(position.current_price)
-        entry_price = float(position.avg_entry_price)
         
-        # Calculate dynamic asset boundaries
         try:
             _, _, atr = calculate_atr_and_get_data(ticker)
         except Exception:
             atr = current_price * 0.02 # Safe volatility fallback if API fails
             
-        # Initialize asset tracking inside state if missing
         if ticker not in state:
             state[ticker] = {
                 "highest_recorded_price": current_price,
@@ -146,36 +145,35 @@ def monitor_active_portfolio_exits(trading_client, state):
             
         state[ticker]["sessions_held"] += 1
         
-        # Update trailing high water mark
         if current_price > state[ticker]["highest_recorded_price"]:
             state[ticker]["highest_recorded_price"] = current_price
             
         highest_tracked = state[ticker]["highest_recorded_price"]
         saved_atr = state[ticker]["atr_at_entry"]
         
-        # 1. Chandelier Trailing Floor calculation (2.5x ATR trailing below the peak)
+        # Chandelier Trailing Floor calculation (2.5x ATR trailing below the peak)
         trailing_stop_floor = round(highest_tracked - (2.5 * saved_atr), 2)
         
         print(f"📊 {ticker} Tracking -> Current: ${current_price:.2f} | Trailing Stop Floor: ${trailing_stop_floor:.2f} | Sessions Active: {state[ticker]['sessions_held']}/4")
 
-        # 2. Time-Decay Check: Exit if locked inside a structural noise channel across 4 sessions
+        # Time-Decay Check
         if state[ticker]["sessions_held"] >= 4:
-            print(f"⏳ [TIME EXCLUSION] Time-decay threshold matched for {ticker} (Alpha signal expired). Liquidating...")
+            print(f"⏳ [TIME EXCLUSION] Time-decay threshold matched for {ticker}. Liquidating...")
             trading_client.close_position(ticker)
-            del state[ticker]
+            if ticker in state: del state[ticker]
             continue
 
-        # 3. Volatility Stop Execution Check
+        # Volatility Stop Execution Check
         if current_price <= trailing_stop_floor:
-            print(f"🚨 [VOLATILITY BREACH] {ticker} cracked the dynamic trailing floor of ${trailing_stop_floor:.2f}! Executing liquidation order...")
+            print(f"🚨 [VOLATILITY BREACH] {ticker} cracked the trailing floor of ${trailing_stop_floor:.2f}! Liquidating...")
             trading_client.close_position(ticker)
-            del state[ticker]
+            if ticker in state: del state[ticker]
             continue
             
     return state
 
 # 6. Primary Execution Engine Loop
-def process_scans_and_entries(ticker, trading_client, state):
+def process_scans_and_entries(ticker, trading_client, data_client, state):
     print(f"\n🔄 [SCANNING] Fetching multi-frame technical structures for {ticker}...")
     chart_data, calendar_events, atr = calculate_atr_and_get_data(ticker)
     
@@ -186,7 +184,6 @@ def process_scans_and_entries(ticker, trading_client, state):
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    # Testing Override Gate (To evaluate state changes, this executes buys immediately)
     if action in ["BUY", "HOLD"]:
         print(f"🎯 [EXECUTE] Active cycle triggered. Validating session entry duplicates...")
         
@@ -200,9 +197,11 @@ def process_scans_and_entries(ticker, trading_client, state):
             
         print(f"🟢 Session confirmation approved. Transmitting market entry order...")
         
+        # CORRECT IMPLEMENTATION: Using the StockDataClient to stream the real-time trade price
         try:
-            latest_trade = trading_client.get_latest_trade(ticker)
-            current_price = latest_trade.price
+            request_params = StockLatestTradeRequest(symbol_or_symbols=ticker)
+            latest_trade = data_client.get_stock_latest_trade(request_params)
+            current_price = latest_trade[ticker].price
         except Exception as e:
             print(f"❌ Pricing stream error: {e}. Aborting execution routine.")
             return state
@@ -232,7 +231,10 @@ def process_scans_and_entries(ticker, trading_client, state):
 def run_bot():
     print(f"=== Starting Genius-Tier Regime-Tracking Global Portfolio Scan ===")
     
+    # Initialize both distinct clients needed for full operational capacity
     trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
+    data_client = StockDataClient(ALPACA_KEY, ALPACA_SECRET)
+    
     state = load_portfolio_state()
     
     # Part A: Run risk auditing checks over current open positions
@@ -242,7 +244,7 @@ def run_bot():
     # Part B: Run new session alpha scans
     for ticker in GLOBAL_TICKERS:
         try:
-            state = process_scans_and_entries(ticker, trading_client, state)
+            state = process_scans_and_entries(ticker, trading_client, data_client, state)
             save_portfolio_state(state)
         except Exception as e:
             print(f"❌ Error processing asset tracking sequence for {ticker}: {e}. Advancing matrix...")
