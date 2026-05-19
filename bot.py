@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
-from alpaca.data.client import StockDataClient
+from alpaca.data.historical import StockHistoricalDataClient as StockDataClient
 from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
