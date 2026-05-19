@@ -8,197 +8,244 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
-# 1. Initialize API Keys from environment variables
+# 1. Initialize API Keys and System Configurations
 FMP_KEY = os.getenv("FMP_API_KEY")
 ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 GLOBAL_TICKERS = ["SPY", "NVDA", "AAPL", "MSFT"]
+STATE_FILE = "portfolio_state.json"
 
-# 2. Function to collect Market Data
-def get_market_data(ticker):
+# 2. State Engine Helper Functions
+def load_portfolio_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            print("⚠️ State file corrupted or empty. Re-initializing empty dictionary.")
+            return {}
+    return {}
+
+def save_portfolio_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=4)
+    except Exception as e:
+        print(f"❌ Critical Error saving state file: {e}")
+
+# 3. Mathematical Volatility Engine (ATR)
+def calculate_atr_and_get_data(ticker):
     today = datetime.now(timezone.utc)
-    start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
+    start_date = (today - timedelta(days=15)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
     chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-    chart_params = {
-        "symbol": ticker,
-        "from": start_date,
-        "to": end_date,
-        "apikey": FMP_KEY
-    }
+    chart_params = {"symbol": ticker, "from": start_date, "to": end_date, "apikey": FMP_KEY}
     
-    response = requests.get(chart_url, params=chart_params)
-    chart_response = response.json()
+    response = requests.get(chart_url, params=chart_params).json()
     
-    if isinstance(chart_response, list):
-        chart_data = chart_response[:5]
-    else:
+    if not isinstance(response, list) or len(response) < 6:
         print(f"--- FMP API Error Response for {ticker} ---")
-        print(chart_response)
+        print(response)
         print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an error structure for {ticker}.")
+        raise KeyError(f"FMP Stable API returned an insufficient historical structure for {ticker}.")
         
-    calendar_url = "https://financialmodelingprep.com/stable/economic-calendar"
-    calendar_params = {
-        "from": end_date,
-        "to": end_date,
-        "apikey": FMP_KEY
-    }
+    chart_data = response[:5]  # Most recent 5 days for the AI prompt
     
+    # ATR Math Loop: Calculate True Range across the last 5 full sessions
+    true_ranges = []
+    for i in range(5):
+        high = float(response[i].get("high", 0))
+        low = float(response[i].get("low", 0))
+        close_prev = float(response[i+1].get("close", 0)) if i+1 < len(response) else low
+        
+        tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
+        true_ranges.append(tr)
+        
+    atr = sum(true_ranges) / len(true_ranges)
+    
+    # Economic Calendar Retrieval
+    calendar_url = "https://financialmodelingprep.com/stable/economic-calendar"
+    calendar_params = {"from": end_date, "to": end_date, "apikey": FMP_KEY}
     calendar_events = []
+    
     try:
         calendar_response = requests.get(calendar_url, params=calendar_params).json()
         if isinstance(calendar_response, list):
             calendar_events = [
-                {
-                    "event": event.get("event"),
-                    "country": event.get("country"),
-                    "actual": event.get("actual"),
-                    "estimate": event.get("estimate"),
-                    "previous": event.get("previous"),
-                    "impact": event.get("impact")
-                }
-                for event in calendar_response if event.get("impact") in ["Medium", "High"]
+                {"event": e.get("event"), "country": e.get("country"), "actual": e.get("actual")}
+                for e in calendar_response if e.get("impact") in ["Medium", "High"]
             ]
     except Exception as e:
         print(f"⚠️ Warning: Could not parse economic calendar data: {e}")
 
-    return str(chart_data), str(calendar_events)
+    return chart_data, calendar_events, atr
 
-# 3. Function to talk to DeepSeek-R1 AI
-def ask_ai(ticker, charts, calendar):
+# 4. Neural Network Communication Gate
+def ask_deepseek(ticker, charts, calendar):
     headers = {"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}
-    
     prompt = f"""
     Analyze this asset: {ticker}
     Recent Candlestick Data: {charts}
     Today's Global High-Impact Economic Calendar Events: {calendar}
-    
     Task: Evaluate the technical data alongside the global macroeconomic environment. Determine if the asset price will close higher or lower tomorrow.
     You must output exactly valid JSON format only, with no other conversational text or markdown code blocks.
     Format: {{"action": "BUY", "confidence": 0.58}} or {{"action": "HOLD", "confidence": 0.00}}
     """
-    
     data = {
         "model": "deepseek-ai/DeepSeek-R1",
         "messages": [{"role": "user", "content": prompt}]
     }
     
     response = requests.post("https://api.deepinfra.com/v1/openai/chat/completions", headers=headers, json=data).json()
-    
     if 'choices' not in response:
-        print("--- DeepInfra API Error Response ---")
-        print(response)
-        print("------------------------------------")
-        raise KeyError("Could not find 'choices' in AI response.")
+        raise KeyError("Could not find 'choices' in DeepSeek response.")
         
     ai_text = response['choices'][0]['message']['content'].strip()
-    
     json_blocks = re.findall(r"\{.*?\}", ai_text, re.DOTALL)
     if not json_blocks:
-        print("--- Raw AI Output that failed parsing ---")
-        print(ai_text)
-        print("-----------------------------------------")
         raise ValueError("Could not find any JSON structural blocks in the AI response.")
         
-    json_payload = json_blocks[-1]
+    return json.loads(json_blocks[-1])
+
+# 5. Passive Portfolio Risk & Exit Monitor
+def monitor_active_portfolio_exits(trading_client, state):
+    print("\n🔍 [RISK MONITOR] Auditing active open positions against volatility limits...")
     
     try:
-        return json.loads(json_payload)
+        open_positions = trading_client.get_all_positions()
     except Exception as e:
-        print("--- Text segment that failed final parsing ---")
-        print(json_payload)
-        print("----------------------------------------------")
-        raise ValueError(f"JSON decoder failed to handle selected block: {e}")
+        print(f"⚠️ Could not pull open positions from Alpaca: {e}. Skipping risk check step.")
+        return state
 
-# 4. Core Scanning Engine for a single ticker
-def process_ticker(ticker, trading_client):
-    print(f"\n🔄 [SCANNING] Fetching technical data & economic calendar for {ticker}...")
-    charts, calendar = get_market_data(ticker)
+    active_symbols = [p.symbol for p in open_positions]
     
-    print(f"🧠 [ANALYZING] Consulting DeepSeek-R1 Macro Brain for {ticker}...")
-    decision = ask_ai(ticker, charts, calendar)
-    print(f"📊 [AI OUTPUT] {ticker} Decision: {decision}")
+    # Purge stale tickers from state if they were liquidated manually outside the script
+    state = {ticker: data for ticker, data in state.items() if ticker in active_symbols}
+
+    for position in open_positions:
+        ticker = position.symbol
+        current_price = float(position.current_price)
+        entry_price = float(position.avg_entry_price)
+        
+        # Calculate dynamic asset boundaries
+        try:
+            _, _, atr = calculate_atr_and_get_data(ticker)
+        except Exception:
+            atr = current_price * 0.02 # Safe volatility fallback if API fails
+            
+        # Initialize asset tracking inside state if missing
+        if ticker not in state:
+            state[ticker] = {
+                "highest_recorded_price": current_price,
+                "sessions_held": 0,
+                "atr_at_entry": atr
+            }
+            
+        state[ticker]["sessions_held"] += 1
+        
+        # Update trailing high water mark
+        if current_price > state[ticker]["highest_recorded_price"]:
+            state[ticker]["highest_recorded_price"] = current_price
+            
+        highest_tracked = state[ticker]["highest_recorded_price"]
+        saved_atr = state[ticker]["atr_at_entry"]
+        
+        # 1. Chandelier Trailing Floor calculation (2.5x ATR trailing below the peak)
+        trailing_stop_floor = round(highest_tracked - (2.5 * saved_atr), 2)
+        
+        print(f"📊 {ticker} Tracking -> Current: ${current_price:.2f} | Trailing Stop Floor: ${trailing_stop_floor:.2f} | Sessions Active: {state[ticker]['sessions_held']}/4")
+
+        # 2. Time-Decay Check: Exit if locked inside a structural noise channel across 4 sessions
+        if state[ticker]["sessions_held"] >= 4:
+            print(f"⏳ [TIME EXCLUSION] Time-decay threshold matched for {ticker} (Alpha signal expired). Liquidating...")
+            trading_client.close_position(ticker)
+            del state[ticker]
+            continue
+
+        # 3. Volatility Stop Execution Check
+        if current_price <= trailing_stop_floor:
+            print(f"🚨 [VOLATILITY BREACH] {ticker} cracked the dynamic trailing floor of ${trailing_stop_floor:.2f}! Executing liquidation order...")
+            trading_client.close_position(ticker)
+            del state[ticker]
+            continue
+            
+    return state
+
+# 6. Primary Execution Engine Loop
+def process_scans_and_entries(ticker, trading_client, state):
+    print(f"\n🔄 [SCANNING] Fetching multi-frame technical structures for {ticker}...")
+    chart_data, calendar_events, atr = calculate_atr_and_get_data(ticker)
+    
+    print(f"🧠 [ANALYZING] Querying DeepSeek-R1 Macro Engine for {ticker}...")
+    decision = ask_deepseek(ticker, str(chart_data), str(calendar_events))
+    print(f"📊 [AI OUTPUT] {ticker} Evaluation payload: {decision}")
     
     action = decision.get("action")
     confidence = decision.get("confidence", 0.0)
     
-    # FOR THIS MANUAL TEST: We accept BUY or HOLD to force trades through and see the new brackets work
+    # Testing Override Gate (To evaluate state changes, this executes buys immediately)
     if action in ["BUY", "HOLD"]:
-        print(f"🎯 [EXECUTE] Active mode triggered! Checking session order history...")
+        print(f"🎯 [EXECUTE] Active cycle triggered. Validating session entry duplicates...")
         
-        # HIGH ACTIVITY FIX: Check if we already placed an order TODAY, instead of blocking wholesale open positions
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        order_filter = GetOrdersRequest(
-            status=QueryOrderStatus.ALL,
-            side=OrderSide.BUY,
-            nested=False
-        )
-        
+        order_filter = GetOrdersRequest(status=QueryOrderStatus.ALL, side=OrderSide.BUY, nested=False)
         all_orders = trading_client.get_orders(order_filter)
-        duplicate_found = False
         
-        for order in all_orders:
-            if order.symbol == ticker and order.created_at >= today_start:
-                duplicate_found = True
-                break
-                
-        if duplicate_found:
-            print(f"🛡️ [SAFETY] You already fired a trade for {ticker} during this market session. Skipping to protect capital.")
-            return
+        if any(o.symbol == ticker and o.created_at >= today_start for o in all_orders):
+            print(f"🛡️ [SAFETY] A position deployment was already completed for {ticker} during this market session. Order blocked.")
+            return state
             
-        print(f"🟢 No recent session orders for {ticker}. Fetching execution price...")
+        print(f"🟢 Session confirmation approved. Transmitting market entry order...")
         
         try:
             latest_trade = trading_client.get_latest_trade(ticker)
             current_price = latest_trade.price
-            print(f"💵 Current Market Price for {ticker}: ${current_price:.2f}")
         except Exception as e:
-            print(f"❌ Failed to fetch current price from Alpaca: {e}. Skipping order execution.")
-            return
+            print(f"❌ Pricing stream error: {e}. Aborting execution routine.")
+            return state
 
-        # ASSET-SPECIFIC VOLATILITY BRACKETS (Paul Tudor Jones 3:1 Ratio)
-        if ticker in ["SPY"]:
-            sl_percent = 0.015  # 1.5% Stop Loss
-            tp_percent = 0.045  # 4.5% Take Profit
-        else:
-            sl_percent = 0.025  # 2.5% Stop Loss
-            tp_percent = 0.075  # 7.5% Take Profit
-
-        stop_loss_price = round(current_price * (1.0 - sl_percent), 2)
-        take_profit_price = round(current_price * (1.0 + tp_percent), 2)
-        
-        print(f"🛡️ Risk Setup -> Stop Loss: ${stop_loss_price:.2f} | Take Profit: ${take_profit_price:.2f}")
-            
         order_data = MarketOrderRequest(
             symbol=ticker,
             qty=1,
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY,
-            order_class="bracket",
-            take_profit={"limit_price": take_profit_price},
-            stop_loss={"stop_price": stop_loss_price}
+            time_in_force=TimeInForce.DAY
         )
         
         trading_client.submit_order(order_data)
-        print(f"🚀 [SUCCESS] Server-Side Bracket Order transmitted to Alpaca for {ticker}!")
+        print(f"🚀 [SUCCESS] Base equity entry executed for 1 share of {ticker} at ${current_price:.2f}!")
+        
+        # Populate tracking metadata block inside our active state
+        state[ticker] = {
+            "highest_recorded_price": current_price,
+            "sessions_held": 0,
+            "atr_at_entry": atr
+        }
     else:
-        print(f"⏸️ [SKIP] Asset skipped.")
+        print(f"⏸️ [SKIP] Signal status evaluated as neutral.")
+        
+    return state
 
-# 5. Main Loop Execution
+# 7. System Orchestration Routine
 def run_bot():
-    print(f"=== Starting Macro-Driven Global Session Portfolio Scan ===")
+    print(f"=== Starting Genius-Tier Regime-Tracking Global Portfolio Scan ===")
     
     trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
+    state = load_portfolio_state()
     
+    # Part A: Run risk auditing checks over current open positions
+    state = monitor_active_portfolio_exits(trading_client, state)
+    save_portfolio_state(state)
+    
+    # Part B: Run new session alpha scans
     for ticker in GLOBAL_TICKERS:
         try:
-            process_ticker(ticker, trading_client)
+            state = process_scans_and_entries(ticker, trading_client, state)
+            save_portfolio_state(state)
         except Exception as e:
-            print(f"❌ Error processing {ticker}: {e}. Skipping to next asset...")
+            print(f"❌ Error processing asset tracking sequence for {ticker}: {e}. Advancing matrix...")
         
         print("⏳ Pausing 20 seconds to guarantee API safety...")
         time.sleep(20)
