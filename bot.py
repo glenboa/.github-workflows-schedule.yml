@@ -5,144 +5,131 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
-from alpaca.data.historical import StockHistoricalDataClient as StockDataClient
-from alpaca.data.requests import StockLatestTradeRequest
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.data.historical import CryptoHistoricalDataClient
+from alpaca.data.requests import CryptoLatestTradeRequest
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 
-# 1. Initialize API Keys and System Configurations
+# 1. System Configuration
 FMP_KEY = os.getenv("FMP_API_KEY")
 ALPACA_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
 AI_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-GLOBAL_TICKERS = ["SPY", "NVDA", "AAPL", "MSFT"]
+# LASER FOCUS TARGET: The #1 absolute volatility asset on the platform
+MASTER_TICKER = "BTC/USD"  
 STATE_FILE = "portfolio_state.json"
+JOURNAL_FILE = "trade_journal.json"  # THE BOT'S ACTIVE DATABASE LENS
+ALLOCATION_PER_TRADE = 15000.00      # Deploys a robust $15,000 block per scalp to capture moves
 
-# 2. State Engine Helper Functions
-def load_portfolio_state():
-    if os.path.exists(STATE_FILE):
+# 2. Local Database State Handlers
+def load_json_file(filename):
+    if os.path.exists(filename):
         try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            print("⚠️ State file corrupted or empty. Re-initializing empty dictionary.")
-            return {}
+            with open(filename, "r") as f: return json.load(f)
+        except Exception: return {}
     return {}
 
-def save_portfolio_state(state):
+def save_json_file(filename, data):
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=4)
-    except Exception as e:
-        print(f"❌ Critical Error saving state file: {e}")
+        with open(filename, "w") as f: json.dump(data, f, indent=4)
+    except Exception as e: print(f"❌ Storage error: {e}")
 
-# 3. Mathematical Volatility Engine (ATR)
-def calculate_atr_and_get_data(ticker):
+# 3. Post-Mortem Logging Engine: Writing Down Mistakes & Successes
+def log_trade_to_journal(entry_price, exit_price, outcome, loops_active, confidence):
+    journal = load_json_file(JOURNAL_FILE)
+    if "history" not in journal:
+        journal["history"] = []
+        
+    profit_loss_pct = round(((exit_price - entry_price) / entry_price) * 100, 2)
+    if outcome == "LOSS":
+        profit_loss_pct = -abs(profit_loss_pct)
+
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "asset": MASTER_TICKER,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "outcome": outcome,
+        "profit_loss_pct": profit_loss_pct,
+        "loops_held": loops_active,
+        "ai_confidence_at_entry": confidence
+    }
+    
+    journal["history"].append(log_entry)
+    # Save the last 20 clean logs so the neural network context doesn't get flooded
+    journal["history"] = journal["history"][-20:]
+    save_json_file(JOURNAL_FILE, journal)
+    print(f"🧠 [MEMORY] Logged {MASTER_TICKER} trade to feedback ledger. PnL: {profit_loss_pct}%.")
+
+# 4. Volatility Calculation Engine (ATR)
+def calculate_btc_atr_and_data():
     today = datetime.now(timezone.utc)
     start_date = (today - timedelta(days=15)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
     chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-    chart_params = {"symbol": ticker, "from": start_date, "to": end_date, "apikey": FMP_KEY}
-    
-    response = requests.get(chart_url, params=chart_params).json()
+    response = requests.get(chart_url, params={"symbol": "BTC", "from": start_date, "to": end_date, "apikey": FMP_KEY}).json()
     
     if not isinstance(response, list) or len(response) < 6:
-        print(f"--- FMP API Error Response for {ticker} ---")
-        print(response)
-        print("------------------------------------------")
-        raise KeyError(f"FMP Stable API returned an insufficient historical structure for {ticker}.")
+        raise KeyError("Insufficient historical framework data parsed for BTC.")
         
-    chart_data = response[:5]  # Most recent 5 days for the AI prompt
-    
-    # ATR Math Loop: Calculate True Range across the last 5 full sessions
+    chart_data = response[:5]
     true_ranges = []
     for i in range(5):
         high = float(response[i].get("high", 0))
         low = float(response[i].get("low", 0))
         close_prev = float(response[i+1].get("close", 0)) if i+1 < len(response) else low
-        
         tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
         true_ranges.append(tr)
         
-    atr = sum(true_ranges) / len(true_ranges)
-    
-    # Economic Calendar Retrieval
-    calendar_url = "https://financialmodelingprep.com/stable/economic-calendar"
-    calendar_params = {"from": end_date, "to": end_date, "apikey": FMP_KEY}
-    calendar_events = []
-    
-    try:
-        calendar_response = requests.get(calendar_url, params=calendar_params).json()
-        if isinstance(calendar_response, list):
-            calendar_events = [
-                {"event": e.get("event"), "country": e.get("country"), "actual": e.get("actual")}
-                for e in calendar_response if e.get("impact") in ["Medium", "High"]
-            ]
-    except Exception as e:
-        print(f"⚠️ Warning: Could not parse economic calendar data: {e}")
+    return chart_data, (sum(true_ranges) / len(true_ranges))
 
-    return chart_data, calendar_events, atr
-
-# 4. Neural Network Communication Gate
-def ask_deepseek(ticker, charts, calendar):
+# 5. Neural Communication Gate with Self-Correcting Feedback Context
+def ask_deepseek_with_memory(charts, historical_history):
     headers = {"Authorization": f"Bearer {AI_KEY}", "Content-Type": "application/json"}
+    
     prompt = f"""
-    Analyze this asset: {ticker}
+    Analyze the absolute top volatility currency asset: {MASTER_TICKER}
     Recent Candlestick Data: {charts}
-    Today's Global High-Impact Economic Calendar Events: {calendar}
-    Task: Evaluate the technical data alongside the global macroeconomic environment. Determine if the asset price will close higher or lower tomorrow.
-    You must output exactly valid JSON format only, with no other conversational text or markdown code blocks.
-    Format: {{"action": "BUY", "confidence": 0.58}} or {{"action": "HOLD", "confidence": 0.00}}
+    
+    --- YOUR HISTORICAL TRADING EXPERIENCES (LEARNING LEDGER) ---
+    Analyze your past trade records provided below. Study the exact entry patterns that resulted in a 'LOSS' versus those that yielded a 'WIN'.
+    If a specific style of breakout, chart setup, or low-confidence trade lost money recently, modify your strategy instantly to avoid replicating the exact mistake:
+    {json.dumps(historical_history, indent=2)}
+    --------------------------------------------------------------
+    
+    Task: Combine your historical tracking memory with current market technical structures to dictate if a highly precise momentum scalp buy is viable right now.
+    You must output exactly valid JSON format only, with no other conversational prose.
+    Format: {{"action": "BUY", "confidence": 0.74}} or {{"action": "HOLD", "confidence": 0.00}}
     """
+    
     data = {
         "model": "deepseek-ai/DeepSeek-R1",
         "messages": [{"role": "user", "content": prompt}]
     }
     
     response = requests.post("https://api.deepinfra.com/v1/openai/chat/completions", headers=headers, json=data).json()
-    if 'choices' not in response:
-        raise KeyError("Could not find 'choices' in DeepSeek response.")
-        
     ai_text = response['choices'][0]['message']['content'].strip()
     json_blocks = re.findall(r"\{.*?\}", ai_text, re.DOTALL)
-    if not json_blocks:
-        raise ValueError("Could not find any JSON structural blocks in the AI response.")
-        
     return json.loads(json_blocks[-1])
 
-# 5. Passive Portfolio Risk & Exit Monitor
+# 6. Active Execution Risk & Tight Trailing Stop Manager
 def monitor_active_portfolio_exits(trading_client, state):
-    print("\n🔍 [RISK MONITOR] Auditing active open positions against volatility limits...")
-    
+    print("\n🔍 [RISK MONITOR] Auditing active Bitcoin exposure boundaries...")
     try:
         open_positions = trading_client.get_all_positions()
-    except Exception as e:
-        print(f"⚠️ Could not pull open positions from Alpaca: {e}. Skipping risk check step.")
+    except Exception:
         return state
 
     active_symbols = [p.symbol for p in open_positions]
-    
-    # Purge stale tickers from state if they were liquidated manually outside the script
-    state = {ticker: data for ticker, data in state.items() if ticker in active_symbols}
+    state = {t: data for t, data in state.items() if t in active_symbols}
 
     for position in open_positions:
         ticker = position.symbol
-        current_price = float(position.current_price)
+        if ticker != MASTER_TICKER: continue
         
-        try:
-            _, _, atr = calculate_atr_and_get_data(ticker)
-        except Exception:
-            atr = current_price * 0.02 # Safe volatility fallback if API fails
-            
-        if ticker not in state:
-            state[ticker] = {
-                "highest_recorded_price": current_price,
-                "sessions_held": 0,
-                "atr_at_entry": atr
-            }
-            
+        current_price = float(position.current_price)
         state[ticker]["sessions_held"] += 1
         
         if current_price > state[ticker]["highest_recorded_price"]:
@@ -151,108 +138,85 @@ def monitor_active_portfolio_exits(trading_client, state):
         highest_tracked = state[ticker]["highest_recorded_price"]
         saved_atr = state[ticker]["atr_at_entry"]
         
-        # Chandelier Trailing Floor calculation (2.5x ATR trailing below the peak)
-        trailing_stop_floor = round(highest_tracked - (2.5 * saved_atr), 2)
-        
-        print(f"📊 {ticker} Tracking -> Current: ${current_price:.2f} | Trailing Stop Floor: ${trailing_stop_floor:.2f} | Sessions Active: {state[ticker]['sessions_held']}/4")
+        # Hyper-Scalper Trailing Floor: Tight 1.2x ATR trailing below the peak to tightly seal profits
+        trailing_stop_floor = round(highest_tracked - (1.2 * saved_atr), 2)
+        print(f"📊 {MASTER_TICKER} -> Price: ${current_price:.2f} | Floor: ${trailing_stop_floor:.2f} | Loops Active: {state[ticker]['sessions_held']}/5")
 
-        # Time-Decay Check
-        if state[ticker]["sessions_held"] >= 4:
-            print(f"⏳ [TIME EXCLUSION] Time-decay threshold matched for {ticker}. Liquidating...")
-            trading_client.close_position(ticker)
-            if ticker in state: del state[ticker]
+        # Exit Rule A: Floor Violated
+        if current_price <= trailing_stop_floor:
+            print(f"🚨 [VOLATILITY TRAIL BREAK] Fell below trailing stop threshold. Liquidating...")
+            trading_client.close_position(MASTER_TICKER)
+            log_trade_to_journal(state[ticker]["entry_price"], current_price, "LOSS", state[ticker]["sessions_held"], state[ticker]["confidence_at_entry"])
+            del state[ticker]
             continue
 
-        # Volatility Stop Execution Check
-        if current_price <= trailing_stop_floor:
-            print(f"🚨 [VOLATILITY BREACH] {ticker} cracked the trailing floor of ${trailing_stop_floor:.2f}! Liquidating...")
-            trading_client.close_position(ticker)
-            if ticker in state: del state[ticker]
+        # Exit Rule B: Velocity Time Out (5 script loops = 25 minutes max duration)
+        if state[ticker]["sessions_held"] >= 5:
+            print(f"⏳ [VELOCITY STAGNATION] Position held for 25 minutes. Liquidating to maintain agility...")
+            trading_client.close_position(MASTER_TICKER)
+            outcome = "WIN" if current_price >= state[ticker]["entry_price"] else "LOSS"
+            log_trade_to_journal(state[ticker]["entry_price"], current_price, outcome, state[ticker]["sessions_held"], state[ticker]["confidence_at_entry"])
+            del state[ticker]
             continue
             
     return state
 
-# 6. Primary Execution Engine Loop
-def process_scans_and_entries(ticker, trading_client, data_client, state):
-    print(f"\n🔄 [SCANNING] Fetching multi-frame technical structures for {ticker}...")
-    chart_data, calendar_events, atr = calculate_atr_and_get_data(ticker)
+# 7. Orchestration Routine
+def run_master_engine():
+    print(f"=== Starting Single-Pair Learning Machine on {MASTER_TICKER} ===")
     
-    print(f"🧠 [ANALYZING] Querying DeepSeek-R1 Macro Engine for {ticker}...")
-    decision = ask_deepseek(ticker, str(chart_data), str(calendar_events))
-    print(f"📊 [AI OUTPUT] {ticker} Evaluation payload: {decision}")
+    trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
+    data_client = CryptoHistoricalDataClient() # Dedicated SDK module for clean pricing execution
     
-    action = decision.get("action")
-    confidence = decision.get("confidence", 0.0)
+    state = load_json_file(STATE_FILE)
+    journal = load_json_file(JOURNAL_FILE)
     
-    if action in ["BUY", "HOLD"]:
-        print(f"🎯 [EXECUTE] Active cycle triggered. Validating session entry duplicates...")
-        
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        order_filter = GetOrdersRequest(status=QueryOrderStatus.ALL, side=OrderSide.BUY, nested=False)
-        all_orders = trading_client.get_orders(order_filter)
-        
-        if any(o.symbol == ticker and o.created_at >= today_start for o in all_orders):
-            print(f"🛡️ [SAFETY] A position deployment was already completed for {ticker} during this market session. Order blocked.")
-            return state
-            
-        print(f"🟢 Session confirmation approved. Transmitting market entry order...")
-        
-        # CORRECT IMPLEMENTATION: Using the StockDataClient to stream the real-time trade price
-        try:
-            request_params = StockLatestTradeRequest(symbol_or_symbols=ticker)
-            latest_trade = data_client.get_stock_latest_trade(request_params)
-            current_price = latest_trade[ticker].price
-        except Exception as e:
-            print(f"❌ Pricing stream error: {e}. Aborting execution routine.")
-            return state
+    # Audit current positions first
+    state = monitor_active_portfolio_exits(trading_client, state)
+    save_json_file(STATE_FILE, state)
+    
+    if MASTER_TICKER in state:
+        print(f"🛡️ Position already running on {MASTER_TICKER}. Halting further entry execution.")
+        return
 
+    # Run Analysis using memory logs
+    chart_data, atr = calculate_btc_atr_and_data()
+    decision = ask_deepseek_with_memory(str(chart_data), journal.get("history", []))
+    print(f"📊 [AI SYSTEM FORECAST] DeepSeek Core Output: {decision}")
+    
+    if decision.get("action") == "BUY":
+        try:
+            request_params = CryptoLatestTradeRequest(symbol_or_symbols=MASTER_TICKER)
+            latest_trade = data_client.get_crypto_latest_trade(request_params)
+            current_price = float(latest_trade[MASTER_TICKER].price)
+        except Exception:
+            current_price = float(chart_data[0].get("close"))
+
+        calculated_qty = round(ALLOCATION_PER_TRADE / current_price, 4)
+        print(f"🟢 [SUBMITTING FILL] Deploying ${ALLOCATION_PER_TRADE} buying power -> Buying {calculated_qty} units of BTC...")
+        
         order_data = MarketOrderRequest(
-            symbol=ticker,
-            qty=1,
+            symbol=MASTER_TICKER,
+            qty=calculated_qty,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY
         )
         
-        trading_client.submit_order(order_data)
-        print(f"🚀 [SUCCESS] Base equity entry executed for 1 share of {ticker} at ${current_price:.2f}!")
-        
-        # Populate tracking metadata block inside our active state
-        state[ticker] = {
-            "highest_recorded_price": current_price,
-            "sessions_held": 0,
-            "atr_at_entry": atr
-        }
-    else:
-        print(f"⏸️ [SKIP] Signal status evaluated as neutral.")
-        
-    return state
-
-# 7. System Orchestration Routine
-def run_bot():
-    print(f"=== Starting Genius-Tier Regime-Tracking Global Portfolio Scan ===")
-    
-    # Initialize both distinct clients needed for full operational capacity
-    trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
-    data_client = StockDataClient(ALPACA_KEY, ALPACA_SECRET)
-    
-    state = load_portfolio_state()
-    
-    # Part A: Run risk auditing checks over current open positions
-    state = monitor_active_portfolio_exits(trading_client, state)
-    save_portfolio_state(state)
-    
-    # Part B: Run new session alpha scans
-    for ticker in GLOBAL_TICKERS:
         try:
-            state = process_scans_and_entries(ticker, trading_client, data_client, state)
-            save_portfolio_state(state)
+            trading_client.submit_order(order_data)
+            state[MASTER_TICKER] = {
+                "entry_price": current_price,
+                "highest_recorded_price": current_price,
+                "sessions_held": 0,
+                "atr_at_entry": atr,
+                "confidence_at_entry": decision.get("confidence", 0.0)
+            }
+            save_json_file(STATE_FILE, state)
+            print("🚀 [SUCCESS] Master Position Established.")
         except Exception as e:
-            print(f"❌ Error processing asset tracking sequence for {ticker}: {e}. Advancing matrix...")
-        
-        print("⏳ Pausing 20 seconds to guarantee API safety...")
-        time.sleep(20)
+            print(f"❌ Alpaca execution rejected: {e}")
             
-    print(f"\n=== Portfolio Scan Complete ===")
+    print("=== System Loop Complete ===")
 
 if __name__ == "__main__":
-    run_bot()
+    run_master_engine()
