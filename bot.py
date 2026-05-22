@@ -68,11 +68,15 @@ def calculate_btc_atr_and_data():
     start_date = (today - timedelta(days=15)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
-    response = requests.get(chart_url, params={"symbol": "BTC", "from": start_date, "to": end_date, "apikey": FMP_KEY}).json()
+    # FIX: Using the correct stable crypto endpoint and ticker structure (BTCUSD)
+    chart_url = "https://financialmodelingprep.com/stable/cryptocurrency-historical-price-eod-full"
+    response = requests.get(chart_url, params={"symbol": "BTCUSD", "from": start_date, "to": end_date, "apikey": FMP_KEY}).json()
     
     if not isinstance(response, list) or len(response) < 6:
-        raise KeyError("Insufficient historical framework data parsed for BTC.")
+        print("--- FMP API Error Response ---")
+        print(response)
+        print("------------------------------")
+        raise KeyError("Insufficient or invalid historical framework data parsed for BTCUSD.")
         
     chart_data = response[:5]
     true_ranges = []
