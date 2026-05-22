@@ -1,36 +1,40 @@
-name: Run AI Trading Bot
+name: High-Frequency Crypto Scalper Loop
 
 on:
   schedule:
-    # 1. Sydney Open: 11:40 PM UTC (Sun-Thu to catch Sunday night week-opener)
-    - cron: '40 23 * * 0-4'
-    # 2. Tokyo Open: 12:10 AM UTC (Mon-Fri)
-    - cron: '10 0 * * 1-5'
-    # 3. London Open: 7:10 AM UTC (Mon-Fri)
-    - cron: '10 7 * * 1-5'
-    # 4. New York Open: 1:40 PM UTC (Mon-Fri)
-    - cron: '40 13 * * 1-5'
-  workflow_dispatch: # Keeps manual button active for testing
+    # Triggers the Python engine every 5 minutes around the clock, 24/7/365
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Keeps manual test button active for custom runs
+
 jobs:
-  trade:
+  run-scalper:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set Up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install System Dependencies
         run: |
-          pip install requests alpaca-py
+          python -m pip install --upgrade pip
+          pip install alpaca-py requests
 
-      - name: Run trading script
+      - name: Execute Self-Correcting Scalper Core
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python bot.py
+
+      - name: Commit and Push Updated Memory Files
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add portfolio_state.json trade_journal.json || true
+          git commit -m "🧠 AI Core Sync: Updated active positions & historical feedback logs" || true
+          git push
