@@ -56,7 +56,7 @@ def run_micro_yield_engine():
         symbol=MASTER_TICKER,
         qty=calculated_qty,
         side=OrderSide.BUY,
-        time_in_force=TimeInForce.DAY,
+        time_in_force=TimeInForce.GTC,  # FIXED: Required for automated crypto brackets
         take_profit=TakeProfitRequest(limit_price=take_profit_price),
         stop_loss=StopLossRequest(stop_price=stop_loss_price)
     )
