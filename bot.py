@@ -68,22 +68,24 @@ def calculate_btc_atr_and_data():
     start_date = (today - timedelta(days=15)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    # FIX: Using the correct stable crypto endpoint and ticker structure (BTCUSD)
-    chart_url = "https://financialmodelingprep.com/stable/cryptocurrency-historical-price-eod-full"
+    chart_url = "https://financialmodelingprep.com/stable/historical-price-eod/full"
     response = requests.get(chart_url, params={"symbol": "BTCUSD", "from": start_date, "to": end_date, "apikey": FMP_KEY}).json()
     
-    if not isinstance(response, list) or len(response) < 6:
+    # Extract the historical data array from the response dictionary
+    historical_list = response.get("historical", []) if isinstance(response, dict) else response
+    
+    if not isinstance(historical_list, list) or len(historical_list) < 6:
         print("--- FMP API Error Response ---")
         print(response)
         print("------------------------------")
         raise KeyError("Insufficient or invalid historical framework data parsed for BTCUSD.")
         
-    chart_data = response[:5]
+    chart_data = historical_list[:5]
     true_ranges = []
     for i in range(5):
-        high = float(response[i].get("high", 0))
-        low = float(response[i].get("low", 0))
-        close_prev = float(response[i+1].get("close", 0)) if i+1 < len(response) else low
+        high = float(historical_list[i].get("high", 0))
+        low = float(historical_list[i].get("low", 0))
+        close_prev = float(historical_list[i+1].get("close", 0)) if i+1 < len(historical_list) else low
         tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
         true_ranges.append(tr)
         
